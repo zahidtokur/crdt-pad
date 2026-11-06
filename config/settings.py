@@ -72,6 +72,8 @@ TEMPLATES = [
 WSGI_APPLICATION = 'config.wsgi.application'
 ASGI_APPLICATION = "config.asgi.application"
 
+LOGIN_REDIRECT_URL = '/echo/'
+
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
