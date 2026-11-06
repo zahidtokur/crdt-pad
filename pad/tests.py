@@ -15,13 +15,14 @@ def communicator(path, session_id=None):
     return WebsocketCommunicator(application, path, headers=headers)
 
 
-class EchoAuthTests(TestCase):
-    def session_id_for(self, username):
-        user = get_user_model().objects.create_user(username, password='pw')
-        client = Client()
-        client.force_login(user)
-        return client.cookies['sessionid'].value
+def session_id_for(username):
+    user = get_user_model().objects.create_user(username, password='pw')
+    client = Client()
+    client.force_login(user)
+    return client.cookies['sessionid'].value
 
+
+class EchoAuthTests(TestCase):
     async def test_anonymous_connection_is_rejected(self):
         ws = communicator('/ws/echo/')
         connected, _ = await ws.connect()
@@ -33,8 +34,8 @@ class EchoAuthTests(TestCase):
         self.assertFalse(connected)
 
     async def test_each_connection_is_tied_to_its_user(self):
-        alice_session = await sync_to_async(self.session_id_for)('alice')
-        bob_session = await sync_to_async(self.session_id_for)('bob')
+        alice_session = await sync_to_async(session_id_for)('alice')
+        bob_session = await sync_to_async(session_id_for)('bob')
         alice = communicator('/ws/echo/', alice_session)
         bob = communicator('/ws/echo/', bob_session)
         self.assertTrue((await alice.connect())[0])
@@ -52,3 +53,42 @@ class EchoAuthTests(TestCase):
         response = self.client.get('/echo/')
         self.assertEqual(response.status_code, 302)
         self.assertTrue(response.url.startswith('/accounts/login/'))
+
+
+class DocumentGroupTests(TestCase):
+    async def connect(self, username, doc_id):
+        session_id = await sync_to_async(session_id_for)(username)
+        ws = communicator(f'/ws/documents/{doc_id}/', session_id)
+        self.assertTrue((await ws.connect())[0])
+        return ws
+
+    async def test_clients_in_same_document_receive_each_other(self):
+        alice = await self.connect('alice', 'doc1')
+        bob = await self.connect('bob', 'doc1')
+
+        await alice.send_to(text_data='hi')
+        self.assertEqual(await bob.receive_from(), 'alice: hi')
+        self.assertEqual(await alice.receive_from(), 'alice: hi')
+
+        await alice.disconnect()
+        await bob.disconnect()
+
+    async def test_clients_in_other_documents_do_not_receive(self):
+        alice = await self.connect('alice', 'doc1')
+        carol = await self.connect('carol', 'doc2')
+
+        await alice.send_to(text_data='hi')
+        self.assertEqual(await alice.receive_from(), 'alice: hi')
+        self.assertTrue(await carol.receive_nothing())
+
+        await alice.disconnect()
+        await carol.disconnect()
+
+    async def test_anonymous_connection_is_rejected(self):
+        ws = communicator('/ws/documents/doc1/')
+        connected, _ = await ws.connect()
+        self.assertFalse(connected)
+
+    def test_document_page_requires_login(self):
+        response = self.client.get('/documents/doc1/')
+        self.assertEqual(response.status_code, 302)
