@@ -74,6 +74,12 @@ ASGI_APPLICATION = "config.asgi.application"
 
 LOGIN_REDIRECT_URL = '/echo/'
 
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',
+    },
+}
+
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 

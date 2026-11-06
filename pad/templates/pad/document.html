@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Document {{ doc_id }}</title>
+</head>
+<body>
+  <h1>Document {{ doc_id }}</h1>
+  <p id="status">Connecting...</p>
+
+  <form id="form">
+    <input id="input" autocomplete="off">
+    <button id="send" disabled>Send</button>
+  </form>
+
+  <ul id="messages"></ul>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const form = document.getElementById('form');
+    const input = document.getElementById('input');
+    const sendButton = document.getElementById('send');
+    const messages = document.getElementById('messages');
+
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${scheme}://${location.host}/ws/documents/{{ doc_id }}/`);
+
+    ws.onopen = () => {
+      statusEl.textContent = 'Connected';
+      sendButton.disabled = false;
+    };
+
+    ws.onmessage = (event) => {
+      const item = document.createElement('li');
+      item.textContent = event.data;
+      messages.appendChild(item);
+    };
+
+    ws.onclose = () => {
+      statusEl.textContent = 'Disconnected';
+      sendButton.disabled = true;
+    };
+
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      ws.send(input.value);
+      input.value = '';
+    });
+  </script>
+</body>
+</html>
