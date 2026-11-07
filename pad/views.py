@@ -10,3 +10,4 @@ def echo(request):
 @login_required
 def document(request, doc_id):
     return render(request, 'pad/document.html', {'doc_id': doc_id})
+

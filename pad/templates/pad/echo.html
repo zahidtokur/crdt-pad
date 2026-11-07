@@ -1,15 +1,15 @@
 <!doctype html>
-<html lang="tr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <title>Echo</title>
 </head>
 <body>
-  <p id="status">Bağlanıyor...</p>
+  <p id="status">Connecting...</p>
 
   <form id="form">
     <input id="input" autocomplete="off">
-    <button id="send" disabled>Gönder</button>
+    <button id="send" disabled>Send</button>
   </form>
 
   <ul id="messages"></ul>
@@ -25,7 +25,7 @@
     const ws = new WebSocket(`${scheme}://${location.host}/ws/echo/`);
 
     ws.onopen = () => {
-      statusEl.textContent = 'Bağlandı';
+      statusEl.textContent = 'Connected';
       sendButton.disabled = false;
     };
 
@@ -36,7 +36,7 @@
     };
 
     ws.onclose = () => {
-      statusEl.textContent = 'Bağlantı kapandı';
+      statusEl.textContent = 'Disconnected';
       sendButton.disabled = true;
     };
 
