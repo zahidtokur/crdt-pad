@@ -18,13 +18,10 @@
     {% if user.is_authenticated %}
       <div class="card shadow-sm border-0 rounded-4 p-4 mb-4 bg-white">
         <h5 class="card-title fw-semibold text-primary mb-2">Welcome, {{ user.username }}!</h5>
-        <p class="text-muted small mb-3">You can start collaborating on documents or test real-time WebSocket communication.</p>
+        <p class="text-muted small mb-3">You can start collaborating on documents or browse your document list.</p>
         <div class="d-flex flex-wrap gap-2 justify-content-center">
-          <a href="{% url 'pad:echo' %}" class="btn btn-outline-primary px-4 py-2 rounded-pill">
-            <i class="bi bi-broadcast me-2"></i>Go to Echo Test
-          </a>
-          <a href="#" class="btn btn-primary px-4 py-2 rounded-pill">
-            <i class="bi bi-file-earmark-plus me-2"></i>Open Sample Document
+          <a href="{% url 'pad:document-list' %}" class="btn btn-primary px-4 py-2 rounded-pill">
+            <i class="bi bi-folder2-open me-2"></i>View Documents
           </a>
         </div>
       </div>
