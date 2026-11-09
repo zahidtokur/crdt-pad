@@ -51,10 +51,7 @@ class DocumentConsumer(AsyncWebsocketConsumer):
             await self.send_error("unknown_type", f"Unknown message type: {msg_type!r}")
             return
 
-        await handler(data.get("data", {}))
-
-    async def document_message(self, event):
-        await self.send(text_data=event['message'])
+        await handler(data)
 
     @database_sync_to_async
     def _check_perms(self):
@@ -91,9 +88,36 @@ class DocumentConsumer(AsyncWebsocketConsumer):
             return
         await self.send(json.dumps({"type": "user_leave", "username": event["username"]}))
         
+    async def document_update(self, event):
+        if event["sender"] == self.channel_name:
+            return
+        await self.send(json.dumps({"type": "document_update", "text": event["text"]}))
+        
+    async def cursor_update(self, event):
+        if event["sender"] == self.channel_name:
+            return
+        await self.send(json.dumps({"type": "cursor_update", 
+                                    "cursor_position": event["cursor_position"], 
+                                    "username": event["username"]}))
+    
     async def send_error(self, code, detail):
         await self.send(json.dumps({"type": "error", "code": code, "detail": detail}))
 
     async def handle_heartbeat(self, data):
         cache.touch(self.doc_cache_key)
         cache.touch(self.user_status_cache_key)
+        
+    async def handle_document_update(self, data):
+        await self.channel_layer.group_send(self.group_name, {
+            "type": "document.update",
+            "text": data["text"],
+            "sender": self.channel_name,
+        })
+        
+    async def handle_cursor_update(self, data):
+        await self.channel_layer.group_send(self.group_name, {
+            "type": "cursor.update",
+            "cursor_position": data["cursor_position"],
+            "username": self.user.username,
+            "sender": self.channel_name,
+        })

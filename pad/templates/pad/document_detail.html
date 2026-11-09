@@ -50,6 +50,54 @@
     50% { transform: scale(1.15); box-shadow: 0 0 10px rgba(25, 135, 84, 0.45); }
     100% { transform: scale(1); }
   }
+  .editor-wrapper {
+    position: relative;
+    width: 100%;
+  }
+  .cursor-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: hidden;
+    border-radius: 0.75rem;
+  }
+  .remote-caret-indicator {
+    position: absolute;
+    top: 0;
+    left: 0;
+    transition: transform 0.12s ease-out, opacity 0.2s ease-in-out;
+    pointer-events: none;
+    z-index: 10;
+  }
+  .remote-caret-line {
+    width: 2px;
+    height: 1.45rem;
+    position: absolute;
+    top: 0;
+    left: 0;
+    border-radius: 1px;
+    animation: caret-blink 1.2s infinite ease-in-out;
+  }
+  .remote-caret-flag {
+    position: absolute;
+    top: -1.35rem;
+    left: 0;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+    user-select: none;
+    line-height: 1.2;
+  }
+  @keyframes caret-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
 </style>
 {% endblock %}
 
@@ -112,16 +160,19 @@
 
       <!-- Editor Area -->
       <div class="mb-3">
-        <textarea
-          id="editor"
-          name="text"
-          class="editor-textarea"
-          placeholder="Start typing your document content here..."
-          autocomplete="off"
-          autocorrect="off"
-          autocapitalize="off"
-          spellcheck="false"
-        >{{ document.text|default:'' }}</textarea>
+        <div class="editor-wrapper position-relative">
+          <textarea
+            id="editor"
+            name="text"
+            class="editor-textarea"
+            placeholder="Start typing your document content here..."
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
+          >{{ document.text|default:'' }}</textarea>
+          <div id="cursor-overlay" class="cursor-overlay"></div>
+        </div>
       </div>
 
       <!-- Card Footer: Metadata -->
@@ -179,6 +230,129 @@
   const MAX_RETRIES = 10;
   let heartbeatInterval = null;
 
+  let docUpdateTimer = null;
+  let docLastSentText = editorEl ? editorEl.value : '';
+  let cursorPauseTimer = null;
+  let lastSentCursorPos = -1;
+
+  // 5 Google Docs-style vibrant colors for editors
+  const CURSOR_COLORS = [
+    { bg: '#0d6efd', text: '#ffffff' }, // Blue
+    { bg: '#198754', text: '#ffffff' }, // Green
+    { bg: '#e65100', text: '#ffffff' }, // Orange
+    { bg: '#6f42c1', text: '#ffffff' }, // Purple
+    { bg: '#dc3545', text: '#ffffff' }, // Red
+  ];
+  const userColorMap = {};
+  let userColorIdx = 0;
+
+  function getUserColor(username) {
+    if (!username) return CURSOR_COLORS[0];
+    if (!userColorMap[username]) {
+      userColorMap[username] = CURSOR_COLORS[userColorIdx % CURSOR_COLORS.length];
+      userColorIdx++;
+    }
+    return userColorMap[username];
+  }
+
+  // Mirror div coordinates calculation
+  const MIRROR_PROPERTIES = [
+    'boxSizing', 'width', 'height', 'overflowX', 'overflowY',
+    'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+    'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+    'fontStyle', 'fontVariant', 'fontWeight', 'fontStretch',
+    'fontSize', 'lineHeight', 'fontFamily', 'textAlign', 'textTransform',
+    'letterSpacing', 'wordSpacing', 'tabSize', 'whiteSpace', 'wordBreak', 'overflowWrap'
+  ];
+
+  let mirrorDiv = null;
+
+  function getCaretCoordinates(element, position) {
+    if (!mirrorDiv) {
+      mirrorDiv = document.createElement('div');
+      mirrorDiv.id = 'editor-mirror-div';
+      document.body.appendChild(mirrorDiv);
+      mirrorDiv.style.position = 'absolute';
+      mirrorDiv.style.top = '-9999px';
+      mirrorDiv.style.left = '-9999px';
+      mirrorDiv.style.visibility = 'hidden';
+      mirrorDiv.style.pointerEvents = 'none';
+    }
+
+    const style = window.getComputedStyle(element);
+    MIRROR_PROPERTIES.forEach((prop) => {
+      mirrorDiv.style[prop] = style[prop];
+    });
+
+    mirrorDiv.style.whiteSpace = 'pre-wrap';
+    mirrorDiv.style.wordWrap = 'break-word';
+    mirrorDiv.style.overflowWrap = 'break-word';
+    mirrorDiv.style.width = `${element.clientWidth}px`;
+
+    mirrorDiv.textContent = element.value.substring(0, position);
+
+    const marker = document.createElement('span');
+    marker.textContent = element.value.substring(position, position + 1) || ' ';
+    mirrorDiv.appendChild(marker);
+
+    return {
+      top: marker.offsetTop + parseInt(style.borderTopWidth || '0', 10),
+      left: marker.offsetLeft + parseInt(style.borderLeftWidth || '0', 10)
+    };
+  }
+
+  const remoteCursors = {};
+
+  function renderCursorPosition(cursorObj) {
+    if (!cursorObj || !editorEl) return;
+    const coords = getCaretCoordinates(editorEl, cursorObj.position);
+    const top = coords.top - editorEl.scrollTop;
+    const left = coords.left - editorEl.scrollLeft;
+
+    if (top < 0 || top > editorEl.clientHeight - 10) {
+      cursorObj.el.style.opacity = '0';
+    } else {
+      cursorObj.el.style.opacity = '1';
+    }
+
+    cursorObj.el.style.transform = `translate(${left}px, ${top}px)`;
+  }
+
+  function updateRemoteCursor(username, position) {
+    if (!username || username === currentUsername || !editorEl) return;
+    const overlay = document.getElementById('cursor-overlay');
+    if (!overlay) return;
+
+    const clampedPos = Math.max(0, Math.min(position, editorEl.value.length));
+    let cursorObj = remoteCursors[username];
+
+    if (!cursorObj) {
+      const color = getUserColor(username);
+      const cursorEl = document.createElement('div');
+      cursorEl.className = 'remote-caret-indicator';
+      cursorEl.innerHTML = `
+        <div class="remote-caret-line" style="background-color: ${color.bg};"></div>
+        <div class="remote-caret-flag" style="background-color: ${color.bg}; color: ${color.text};">
+          ${username}
+        </div>
+      `;
+      overlay.appendChild(cursorEl);
+      cursorObj = { el: cursorEl, position: clampedPos, username };
+      remoteCursors[username] = cursorObj;
+    } else {
+      cursorObj.position = clampedPos;
+    }
+
+    renderCursorPosition(cursorObj);
+  }
+
+  function removeRemoteCursor(username) {
+    if (remoteCursors[username]) {
+      remoteCursors[username].el.remove();
+      delete remoteCursors[username];
+    }
+  }
+
   function startIntervals() {
     stopIntervals();
 
@@ -195,6 +369,111 @@
       clearInterval(heartbeatInterval);
       heartbeatInterval = null;
     }
+    if (docUpdateTimer) {
+      clearInterval(docUpdateTimer);
+      docUpdateTimer = null;
+    }
+  }
+
+  function sendDocumentUpdate() {
+    if (!editorEl || !socket || socket.readyState !== WebSocket.OPEN) return;
+    const currentText = editorEl.value;
+    const currentCursorPos = editorEl.selectionStart;
+    if (currentText !== docLastSentText) {
+      // 1. Send text update
+      socket.send(JSON.stringify({
+        type: 'document_update',
+        text: currentText
+      }));
+      docLastSentText = currentText;
+
+      // 2. Immediately send cursor position as a separate message
+      socket.send(JSON.stringify({
+        type: 'cursor_update',
+        cursor_position: currentCursorPos
+      }));
+      lastSentCursorPos = currentCursorPos;
+    }
+  }
+
+  function sendCursorUpdate() {
+    if (!editorEl || !socket || socket.readyState !== WebSocket.OPEN) return;
+    const currentPos = editorEl.selectionStart;
+    if (currentPos !== lastSentCursorPos) {
+      socket.send(JSON.stringify({
+        type: 'cursor_update',
+        cursor_position: currentPos
+      }));
+      lastSentCursorPos = currentPos;
+    }
+  }
+
+  function scheduleCursorUpdateOnPause() {
+    if (cursorPauseTimer) {
+      clearTimeout(cursorPauseTimer);
+    }
+    // When user pauses for 300ms, send cursor_update
+    cursorPauseTimer = setTimeout(() => {
+      sendCursorUpdate();
+    }, 300);
+  }
+
+  function handleDocumentUpdate(data) {
+    if (!data || data.text === undefined || data.text === null || !editorEl) return;
+    const newText = data.text;
+    if (editorEl.value !== newText) {
+      const isFocused = document.activeElement === editorEl;
+      const start = editorEl.selectionStart;
+      const end = editorEl.selectionEnd;
+
+      editorEl.value = newText;
+      docLastSentText = newText; // Prevent sending back received content
+
+      if (isFocused) {
+        editorEl.setSelectionRange(start, end);
+      }
+
+      // Re-align any remote cursors after text change
+      Object.values(remoteCursors).forEach(renderCursorPosition);
+    }
+  }
+
+  if (editorEl) {
+    // While user is typing, send text updates every 1.5 seconds
+    editorEl.addEventListener('input', () => {
+      scheduleCursorUpdateOnPause();
+
+      if (!docUpdateTimer) {
+        docUpdateTimer = setInterval(() => {
+          if (editorEl.value !== docLastSentText) {
+            sendDocumentUpdate();
+          } else {
+            // Typing paused and last change sent; stop interval
+            clearInterval(docUpdateTimer);
+            docUpdateTimer = null;
+          }
+        }, 1500);
+      }
+    });
+
+    // Send cursor on pause / movement
+    editorEl.addEventListener('keyup', scheduleCursorUpdateOnPause);
+    editorEl.addEventListener('click', scheduleCursorUpdateOnPause);
+    editorEl.addEventListener('select', scheduleCursorUpdateOnPause);
+
+    // Keep remote cursors aligned on scroll
+    editorEl.addEventListener('scroll', () => {
+      Object.values(remoteCursors).forEach(renderCursorPosition);
+    });
+
+    // Send immediately when textarea loses focus
+    editorEl.addEventListener('blur', () => {
+      sendDocumentUpdate();
+      if (docUpdateTimer) {
+        clearInterval(docUpdateTimer);
+        docUpdateTimer = null;
+      }
+    });
   }
 
   function updateStatus(text, badgeClass) {
@@ -307,6 +586,7 @@
       badge.classList.remove('online');
       badge.setAttribute('title', 'Offline');
     }
+    removeRemoteCursor(username);
     logMessage(`${username} left`, 'secondary');
   }
 
@@ -348,6 +628,8 @@
         badge.classList.remove('online');
         badge.setAttribute('title', 'Offline');
       });
+      // Clear remote cursors on disconnect
+      Object.keys(remoteCursors).forEach(removeRemoteCursor);
 
       scheduleReconnect();
     };
@@ -363,6 +645,14 @@
 
         // Handle different message types step-by-step
         switch (data.type) {
+          case 'document_update':
+            handleDocumentUpdate(data);
+            break;
+          case 'cursor_update':
+            if (data.username && data.cursor_position !== undefined) {
+              updateRemoteCursor(data.username, data.cursor_position);
+            }
+            break;
           case 'active_users':
             handleActiveUsers(data.users);
             break;
