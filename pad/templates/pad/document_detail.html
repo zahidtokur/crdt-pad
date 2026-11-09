@@ -1,0 +1,389 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ document.title }} - CRDT Pad{% endblock %}
+
+{% block extra_head %}
+<style>
+  .editor-textarea {
+    width: 100%;
+    min-height: 460px;
+    padding: 1.25rem;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, monospace;
+    font-size: 1rem;
+    line-height: 1.65;
+    color: #212529;
+    background-color: #fdfdfd;
+    border: 1px solid #dee2e6;
+    border-radius: 0.75rem;
+    resize: vertical;
+    outline: none;
+    transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+  }
+  .editor-textarea:focus {
+    background-color: #fff;
+    border-color: #0d6efd;
+    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.12);
+  }
+  .editor-badge {
+    transition: all 0.25s ease-in-out;
+  }
+  .editor-badge.online {
+    background-color: rgba(25, 135, 84, 0.12) !important;
+    color: #198754 !important;
+    border-color: #198754 !important;
+    box-shadow: 0 0 0 0.15rem rgba(25, 135, 84, 0.15);
+  }
+  .editor-badge.online .editor-status-dot {
+    color: #198754 !important;
+    animation: pulse-green 2s infinite;
+  }
+  .editor-badge.join-pulse {
+    animation: badge-join-pop 0.6s ease-out;
+  }
+  @keyframes pulse-green {
+    0% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(1.2); }
+    100% { opacity: 1; transform: scale(1); }
+  }
+  @keyframes badge-join-pop {
+    0% { transform: scale(0.9); }
+    50% { transform: scale(1.15); box-shadow: 0 0 10px rgba(25, 135, 84, 0.45); }
+    100% { transform: scale(1); }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="py-4">
+
+  <!-- Top Navigation / Back Link -->
+  <div class="mb-3">
+    <a href="#" class="text-decoration-none text-muted small d-inline-flex align-items-center gap-1">
+      <i class="bi bi-arrow-left"></i>
+      <span>Back to Documents</span>
+    </a>
+  </div>
+
+  <!-- Document Card -->
+  <div class="card shadow-sm border-0 rounded-4 bg-white">
+    <div class="card-body p-4">
+
+      <!-- Card Header: Title & Meta Info -->
+      <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center gap-3 pb-3 mb-3 border-bottom">
+        <div>
+          <div class="d-flex align-items-center gap-2 mb-1">
+            <i class="bi bi-file-earmark-text text-primary fs-4"></i>
+            <h1 class="h4 fw-bold text-dark mb-0">
+              {{ document.title }}
+            </h1>
+          </div>
+          {% if document.owner %}
+            <span class="badge bg-primary bg-opacity-10 text-primary small">
+              <i class="bi bi-shield-check me-1"></i>Owner: {{ document.owner.username }}
+            </span>
+          {% endif %}
+        </div>
+
+        <div class="d-flex flex-column align-items-md-end gap-2">
+          <span id="connection-status" class="badge bg-secondary rounded-pill px-3 py-2">
+            <i class="bi bi-circle-fill me-1 small"></i>Connecting...
+          </span>
+
+          <!-- Editors List -->
+          {% if document.editors.all %}
+            <div class="d-flex flex-column align-items-md-end">
+              <span class="text-secondary small fw-semibold mb-1">
+                <i class="bi bi-people me-1"></i>Editors
+              </span>
+              <div class="d-flex flex-wrap gap-1" id="editors-list">
+                {% for editor in document.editors.all %}
+                  <span class="badge bg-light text-dark border py-1 px-2 editor-badge d-inline-flex align-items-center" data-username="{{ editor.username }}" title="Offline">
+                    <i class="bi bi-circle-fill me-1 text-muted editor-status-dot" style="font-size: 0.5rem;"></i>
+                    <span>{{ editor.username }}</span>
+                  </span>
+                {% empty %}
+                  <span class="text-muted small fst-italic">No editors</span>
+                {% endfor %}
+              </div>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Editor Area -->
+      <div class="mb-3">
+        <textarea
+          id="editor"
+          name="text"
+          class="editor-textarea"
+          placeholder="Start typing your document content here..."
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+        >{{ document.text|default:'' }}</textarea>
+      </div>
+
+      <!-- Card Footer: Metadata -->
+      <div class="pt-3 border-top d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-2 text-muted small">
+        <div>
+          {% if document.updated_at %}
+            <i class="bi bi-clock-history me-1"></i>Last modified:
+            <span class="fw-medium text-dark">{{ document.updated_at|date:"M d, Y H:i" }}</span>
+          {% else %}
+            <i class="bi bi-dot"></i>Document ready
+          {% endif %}
+        </div>
+        <div class="d-flex align-items-center gap-2">
+          <span class="text-muted small">Auto-sync enabled</span>
+        </div>
+      </div>
+
+      <!-- Activity & Event Feed -->
+      <div class="mt-3 pt-3 border-top">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <span class="small fw-semibold text-secondary d-flex align-items-center gap-2">
+            <i class="bi bi-broadcast"></i>Activity & Events
+          </span>
+          <button class="btn btn-sm btn-link text-decoration-none text-muted p-0 small" type="button" data-bs-toggle="collapse" data-bs-target="#activityCollapse" aria-expanded="false" aria-controls="activityCollapse">
+            Toggle Log
+          </button>
+        </div>
+        <div class="collapse show" id="activityCollapse">
+          <div id="messages-log" class="border rounded-3 p-2 bg-light small font-monospace" style="max-height: 140px; overflow-y: auto;">
+            <div class="text-muted fst-italic">Waiting for socket events...</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  const statusEl = document.getElementById('connection-status');
+  const editorEl = document.getElementById('editor');
+  const messagesLog = document.getElementById('messages-log');
+
+  const currentUsername = "{{ request.user.username }}";
+
+  const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const socketUrl = `${scheme}://${window.location.host}/ws/documents/{{ document.slug }}/`;
+  
+  let socket = null;
+  let reconnectTimer = null;
+  let retryCount = 0;
+  const MAX_RETRIES = 10;
+  let heartbeatInterval = null;
+
+  function startIntervals() {
+    stopIntervals();
+
+    // Send heartbeat every 15 seconds while connected
+    heartbeatInterval = setInterval(() => {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'heartbeat' }));
+      }
+    }, 15000);
+  }
+
+  function stopIntervals() {
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+    }
+  }
+
+  function updateStatus(text, badgeClass) {
+    if (!statusEl) return;
+    statusEl.className = `badge ${badgeClass} rounded-pill px-3 py-2`;
+    statusEl.innerHTML = `<i class="bi bi-circle-fill me-1 small"></i>${text}`;
+  }
+
+  function logMessage(text, type = 'secondary') {
+    if (!messagesLog) return;
+    const entry = document.createElement('div');
+    entry.className = `py-1 text-${type}`;
+    const time = new Date().toLocaleTimeString();
+    entry.textContent = `[${time}] ${text}`;
+    messagesLog.prepend(entry);
+  }
+
+  function getReconnectDelay(attempt) {
+    // Exponential backoff: 1s, 1.5s, 2.25s, 3.37s... max 10s (+ small random jitter)
+    const baseDelay = 1000;
+    const factor = 1.5;
+    const maxDelay = 10000;
+    const delay = Math.min(baseDelay * Math.pow(factor, attempt), maxDelay);
+    const jitter = Math.floor(Math.random() * 400);
+    return Math.floor(delay + jitter);
+  }
+
+  function scheduleReconnect() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
+    if (retryCount >= MAX_RETRIES) {
+      updateStatus('Connection Failed', 'bg-danger');
+      logMessage(`Maximum reconnection attempts reached (${MAX_RETRIES}/${MAX_RETRIES}). Please refresh the page.`, 'danger');
+      return;
+    }
+
+    retryCount++;
+    const delay = getReconnectDelay(retryCount - 1);
+    const seconds = (delay / 1000).toFixed(1);
+
+    updateStatus(`Reconnecting (${retryCount}/${MAX_RETRIES})...`, 'bg-warning text-dark');
+    logMessage(`Reconnecting in ${seconds}s (attempt ${retryCount}/${MAX_RETRIES})...`, 'warning');
+
+    reconnectTimer = setTimeout(() => {
+      connectSocket();
+    }, delay);
+  }
+
+  function handleActiveUsers(usersObj) {
+    // usersObj format: { "<user_id>": "<username>", ... }
+    const activeUsernames = new Set(Object.values(usersObj || {}));
+    // Include current user as connected even if not yet in backend's active_users
+    if (currentUsername) {
+      activeUsernames.add(currentUsername);
+    }
+    console.log('Active users received:', activeUsernames);
+
+    const badges = document.querySelectorAll('.editor-badge');
+    badges.forEach((badge) => {
+      const username = badge.getAttribute('data-username');
+      if (activeUsernames.has(username)) {
+        badge.classList.add('online');
+        badge.setAttribute('title', username === currentUsername ? 'Online now (You)' : 'Online now');
+      } else {
+        badge.classList.remove('online');
+        badge.setAttribute('title', 'Offline');
+      }
+    });
+
+    const activeList = Array.from(activeUsernames);
+    if (activeList.length > 0) {
+      logMessage(`Active users (${activeList.length}): ${activeList.join(', ')}`, 'success');
+    } else {
+      logMessage('No other active users', 'secondary');
+    }
+  }
+
+  function handleUserJoin(username) {
+    if (!username) return;
+    let badge = document.querySelector(`.editor-badge[data-username="${username}"]`);
+
+    // If user is not yet in the list (e.g. dynamically joined editor)
+    if (!badge) {
+      const editorsList = document.getElementById('editors-list');
+      if (editorsList) {
+        badge = document.createElement('span');
+        badge.className = 'badge bg-light text-dark border py-1 px-2 editor-badge d-inline-flex align-items-center';
+        badge.setAttribute('data-username', username);
+        badge.innerHTML = `<i class="bi bi-circle-fill me-1 text-muted editor-status-dot" style="font-size: 0.5rem;"></i><span>${username}</span>`;
+        editorsList.appendChild(badge);
+      }
+    }
+
+    if (badge) {
+      badge.classList.add('online', 'join-pulse');
+      badge.setAttribute('title', 'Online now');
+      setTimeout(() => badge.classList.remove('join-pulse'), 700);
+    }
+
+    logMessage(`${username} joined`, 'success');
+  }
+
+  function handleUserLeave(username) {
+    if (!username) return;
+    const badge = document.querySelector(`.editor-badge[data-username="${username}"]`);
+    if (badge) {
+      badge.classList.remove('online');
+      badge.setAttribute('title', 'Offline');
+    }
+    logMessage(`${username} left`, 'secondary');
+  }
+
+  function connectSocket() {
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    updateStatus('Connecting...', 'bg-secondary');
+    socket = new WebSocket(socketUrl);
+
+    socket.onopen = () => {
+      console.log('WebSocket connected:', socketUrl);
+      // Reset retry count on successful connection
+      retryCount = 0;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      startIntervals();
+      updateStatus('Connected', 'bg-success');
+      logMessage('Connected to server', 'success');
+
+      // Immediately mark current user's badge as online/connected
+      if (currentUsername) {
+        const myBadge = document.querySelector(`.editor-badge[data-username="${currentUsername}"]`);
+        if (myBadge) {
+          myBadge.classList.add('online');
+          myBadge.setAttribute('title', 'Online now (You)');
+        }
+      }
+    };
+
+    socket.onclose = (event) => {
+      console.log('WebSocket closed:', event);
+      stopIntervals();
+      // Set all badges to offline when connection is lost
+      document.querySelectorAll('.editor-badge').forEach((badge) => {
+        badge.classList.remove('online');
+        badge.setAttribute('title', 'Offline');
+      });
+
+      scheduleReconnect();
+    };
+
+    socket.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log('Received socket message:', data);
+
+        // Handle different message types step-by-step
+        switch (data.type) {
+          case 'active_users':
+            handleActiveUsers(data.users);
+            break;
+          case 'user_join':
+            handleUserJoin(data.username);
+            break;
+          case 'user_leave':
+            handleUserLeave(data.username);
+            break;
+          default:
+            logMessage(data.message || JSON.stringify(data), 'dark');
+            break;
+        }
+      } catch (err) {
+        // Fallback for plain text messages
+        logMessage(event.data, 'dark');
+      }
+    };
+  }
+
+  // Initial connection
+  connectSocket();
+</script>
+{% endblock %}

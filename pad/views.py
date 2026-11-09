@@ -1,17 +1,12 @@
-from django.contrib.auth.decorators import login_required
-from django.shortcuts import render
+from django.views.generic.detail import DetailView
 from django.views.generic.list import ListView
 from django.contrib.auth.mixins import LoginRequiredMixin
 from .models import Document
 
-@login_required
-def echo(request):
-    return render(request, 'pad/echo.html')
 
+class DocumentDetail(LoginRequiredMixin, DetailView):
+    model = Document
 
-@login_required
-def document(request, doc_id):
-    return render(request, 'pad/document.html', {'doc_id': doc_id})
 
 class DocumentList(LoginRequiredMixin, ListView):
     model = Document
