@@ -1,9 +1,12 @@
+import json
+
 from asgiref.sync import sync_to_async
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
 
 from config.asgi import application
+from .models import Document
 
 HEADERS = [(b'origin', b'http://testserver')]
 
@@ -15,80 +18,60 @@ def communicator(path, session_id=None):
     return WebsocketCommunicator(application, path, headers=headers)
 
 
-def session_id_for(username):
-    user = get_user_model().objects.create_user(username, password='pw')
-    client = Client()
-    client.force_login(user)
-    return client.cookies['sessionid'].value
-
-
-class EchoAuthTests(TestCase):
-    async def test_anonymous_connection_is_rejected(self):
-        ws = communicator('/ws/echo/')
-        connected, _ = await ws.connect()
-        self.assertFalse(connected)
-
-    async def test_invalid_session_is_rejected(self):
-        ws = communicator('/ws/echo/', session_id='invalid')
-        connected, _ = await ws.connect()
-        self.assertFalse(connected)
-
-    async def test_each_connection_is_tied_to_its_user(self):
-        alice_session = await sync_to_async(session_id_for)('alice')
-        bob_session = await sync_to_async(session_id_for)('bob')
-        alice = communicator('/ws/echo/', alice_session)
-        bob = communicator('/ws/echo/', bob_session)
-        self.assertTrue((await alice.connect())[0])
-        self.assertTrue((await bob.connect())[0])
-
-        await alice.send_to(text_data='hi')
-        await bob.send_to(text_data='hello')
-        self.assertEqual(await alice.receive_from(), 'alice: hi')
-        self.assertEqual(await bob.receive_from(), 'bob: hello')
-
-        await alice.disconnect()
-        await bob.disconnect()
-
-    def test_echo_page_requires_login(self):
-        response = self.client.get('/echo/')
-        self.assertEqual(response.status_code, 302)
-        self.assertTrue(response.url.startswith('/accounts/login/'))
-
-
 class DocumentGroupTests(TestCase):
-    async def connect(self, username, doc_id):
-        session_id = await sync_to_async(session_id_for)(username)
-        ws = communicator(f'/ws/documents/{doc_id}/', session_id)
-        self.assertTrue((await ws.connect())[0])
-        return ws
-
-    async def test_clients_in_same_document_receive_each_other(self):
-        alice = await self.connect('alice', 'doc1')
-        bob = await self.connect('bob', 'doc1')
-
-        await alice.send_to(text_data='hi')
-        self.assertEqual(await bob.receive_from(), 'alice: hi')
-        self.assertEqual(await alice.receive_from(), 'alice: hi')
-
-        await alice.disconnect()
-        await bob.disconnect()
-
-    async def test_clients_in_other_documents_do_not_receive(self):
-        alice = await self.connect('alice', 'doc1')
-        carol = await self.connect('carol', 'doc2')
-
-        await alice.send_to(text_data='hi')
-        self.assertEqual(await alice.receive_from(), 'alice: hi')
-        self.assertTrue(await carol.receive_nothing())
-
-        await alice.disconnect()
-        await carol.disconnect()
-
+    def setUp(self):
+        self.client = Client()
+        self.editor_1 = get_user_model().objects.create_user('user1', password='pw')
+        self.editor_2 = get_user_model().objects.create_user('user2', password='pw')
+        self.document = Document.objects.create(owner=self.editor_1, title='Test Document')
+        self.document.editors.add(self.editor_1, self.editor_2)
+        self.outsider = get_user_model().objects.create_user('user3', password='pw')
+    
+    def session_id_for(self, user):
+        self.client.force_login(user)
+        return self.client.cookies['sessionid'].value
+    
     async def test_anonymous_connection_is_rejected(self):
-        ws = communicator('/ws/documents/doc1/')
+        ws = communicator(f'/ws/documents/{self.document.slug}/')
         connected, _ = await ws.connect()
         self.assertFalse(connected)
+        
+    async def test_unauthorized_connection_is_rejected(self):
+        session_id = await sync_to_async(self.session_id_for)(self.outsider)
+        ws = communicator(f'/ws/documents/{self.document.slug}/', session_id)
+        connected, _ = await ws.connect()
+        self.assertFalse(connected)
+        
+    async def test_authorized_connection_is_accepted(self):
+        session_id = await sync_to_async(self.session_id_for)(self.editor_1)
+        ws = communicator(f'/ws/documents/{self.document.slug}/', session_id)
+        connected, _ = await ws.connect()
+        self.assertTrue(connected)
+        
+        await ws.disconnect()
+        
+    async def test_user_connection_messages(self):
+        editor_1_ws = communicator(f'/ws/documents/{self.document.slug}/', 
+                                    await sync_to_async(self.session_id_for)(self.editor_1))
+        self.assertTrue((await editor_1_ws.connect())[0])
+        initial_msg = await editor_1_ws.receive_from()
+        self.assertEqual(json.loads(initial_msg).get("type"), "active_users")
+        
+        editor_2_ws = communicator(f'/ws/documents/{self.document.slug}/', 
+                                    await sync_to_async(self.session_id_for)(self.editor_2))
+        self.assertTrue((await editor_2_ws.connect())[0])
+        initial_msg = await editor_2_ws.receive_from()
+        self.assertEqual(json.loads(initial_msg).get("type"), "active_users")
+        
+        user_join_msg = await editor_1_ws.receive_from()
+        self.assertEqual(json.loads(user_join_msg), {"type": "user_join", "username": self.editor_2.username})
+        
+        await editor_1_ws.disconnect()
+        user_leave_msg = await editor_2_ws.receive_from()
+        self.assertEqual(json.loads(user_leave_msg), {"type": "user_leave", "username": self.editor_1.username})
+        
+        await editor_2_ws.disconnect()
 
     def test_document_page_requires_login(self):
-        response = self.client.get('/documents/doc1/')
+        response = self.client.get(f'/documents/{self.document.slug}/')
         self.assertEqual(response.status_code, 302)

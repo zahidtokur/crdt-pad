@@ -1,7 +1,6 @@
 from django.urls import path
-from .consumer import DocumentConsumer, EchoConsumer
+from .consumer import DocumentConsumer
 
 websocket_urlpatterns = [
-    path('ws/echo/', EchoConsumer.as_asgi()),
-    path('ws/documents/<slug:doc_id>/', DocumentConsumer.as_asgi()),
+    path('ws/documents/<slug:slug>/', DocumentConsumer.as_asgi()),
 ]
