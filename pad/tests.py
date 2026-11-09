@@ -71,6 +71,51 @@ class DocumentGroupTests(TestCase):
         self.assertEqual(json.loads(user_leave_msg), {"type": "user_leave", "username": self.editor_1.username})
         
         await editor_2_ws.disconnect()
+        
+    async def test_document_update_received(self):
+        editor_1_ws = communicator(f'/ws/documents/{self.document.slug}/', 
+                                    await sync_to_async(self.session_id_for)(self.editor_1))
+        await editor_1_ws.connect()
+        await editor_1_ws.receive_from() # pop initial message
+        
+        editor_2_ws = communicator(f'/ws/documents/{self.document.slug}/', 
+                                    await sync_to_async(self.session_id_for)(self.editor_2))
+        await editor_2_ws.connect()
+        await editor_2_ws.receive_from() # pop initial message
+        await editor_1_ws.receive_from() # pop 'user_join' message
+        
+        document_update_msg = json.dumps({'type': 'document_update',
+                                          'text': 'hi'})
+        await editor_1_ws.send_to(text_data=document_update_msg)
+        
+        self.assertEqual(await editor_2_ws.receive_from(), document_update_msg)
+        self.assertTrue(await editor_1_ws.receive_nothing())
+        
+        await editor_1_ws.disconnect()
+        await editor_2_ws.disconnect()
+        
+    async def test_cursor_update_received(self):
+        editor_1_ws = communicator(f'/ws/documents/{self.document.slug}/', 
+                                    await sync_to_async(self.session_id_for)(self.editor_1))
+        await editor_1_ws.connect()
+        await editor_1_ws.receive_from() # pop initial message
+        
+        editor_2_ws = communicator(f'/ws/documents/{self.document.slug}/', 
+                                    await sync_to_async(self.session_id_for)(self.editor_2))
+        await editor_2_ws.connect()
+        await editor_2_ws.receive_from() # pop initial message
+        await editor_1_ws.receive_from() # pop 'user_join' message
+        
+        cursor_update_msg = json.dumps({'type': 'cursor_update',
+                                        'cursor_position': 10,
+                                        'username': self.editor_1.username})
+        await editor_1_ws.send_to(text_data=cursor_update_msg)
+        
+        self.assertEqual(await editor_2_ws.receive_from(), cursor_update_msg)
+        self.assertTrue(await editor_1_ws.receive_nothing())
+        
+        await editor_1_ws.disconnect()
+        await editor_2_ws.disconnect()
 
     def test_document_page_requires_login(self):
         response = self.client.get(f'/documents/{self.document.slug}/')
