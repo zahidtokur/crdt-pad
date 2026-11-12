@@ -222,9 +222,10 @@
   const currentUsername = "{{ request.user.username }}";
 
   const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const socketUrl = `${scheme}://${window.location.host}/ws/documents/{{ document.slug }}/`;
+  const socketUrl = `${scheme}://${window.location.host}/ws/documents/{{ document.pk }}/`;
   
   let socket = null;
+  let pageIsActive = true;
   let reconnectTimer = null;
   let retryCount = 0;
   const MAX_RETRIES = 10;
@@ -502,6 +503,7 @@
   }
 
   function scheduleReconnect() {
+    if (!pageIsActive) return;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -591,14 +593,17 @@
   }
 
   function connectSocket() {
+    if (!pageIsActive) return;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
       return;
     }
 
     updateStatus('Connecting...', 'bg-secondary');
     socket = new WebSocket(socketUrl);
+    const connection = socket;
 
     socket.onopen = () => {
+      if (!pageIsActive || socket !== connection) return;
       console.log('WebSocket connected:', socketUrl);
       // Reset retry count on successful connection
       retryCount = 0;
@@ -621,6 +626,7 @@
     };
 
     socket.onclose = (event) => {
+      if (socket !== connection) return;
       console.log('WebSocket closed:', event);
       stopIntervals();
       // Set all badges to offline when connection is lost
@@ -672,6 +678,37 @@
       }
     };
   }
+
+  window.addEventListener('pagehide', () => {
+    pageIsActive = false;
+    sendDocumentUpdate();
+    stopIntervals();
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    clearTimeout(cursorPauseTimer);
+    cursorPauseTimer = null;
+
+    const connection = socket;
+    socket = null;
+    if (connection && (connection.readyState === WebSocket.OPEN || connection.readyState === WebSocket.CONNECTING)) {
+      connection.close(1000, 'Page closed');
+    }
+
+    document.querySelectorAll('.editor-badge').forEach((badge) => {
+      badge.classList.remove('online');
+      badge.setAttribute('title', 'Offline');
+    });
+    Object.keys(remoteCursors).forEach(removeRemoteCursor);
+    lastSentCursorPos = -1;
+  });
+
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) {
+      pageIsActive = true;
+      retryCount = 0;
+      connectSocket();
+    }
+  });
 
   // Initial connection
   connectSocket();

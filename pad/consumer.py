@@ -3,7 +3,6 @@ import json
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.core.cache import cache
-
 from .models import Document
 
 
@@ -14,15 +13,15 @@ class DocumentConsumer(AsyncWebsocketConsumer):
 
     async def connect(self):
         self.user = self.scope["user"]
-        self.slug = self.scope["url_route"]["kwargs"]["slug"]
-        
+        self.doc_pk = self.scope["url_route"]["kwargs"]["pk"]
         if not await self.is_authorized():
             await self.close()
             return
         
-        self.group_name = f'document_{self.slug}'
-        self.doc_cache_key = f'document_{self.slug}_active_users'
-        self.user_status_cache_key = f'document_{self.slug}_user_{self.user.id}'
+        self.group_name = f'document_{self.doc_pk}'
+        self.doc_cache_key = f'document:{self.doc_pk}:active_users'
+        self.user_status_cache_key = f'document:{self.doc_pk}:{self.user.id}'
+    
         
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
@@ -31,15 +30,21 @@ class DocumentConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, code):
         if self.group_name:
             active_users = cache.get(self.doc_cache_key)
-            active_users.pop(self.user.id, None)
-            cache.set(self.doc_cache_key, active_users, 30)
-            cache.delete(self.user_status_cache_key)
-            await self.channel_layer.group_send(self.group_name, {
-                "type": "user.leave",
-                "user_id": self.user.id,
-                "username": self.user.username,
-                "sender": self.channel_name,
-            })
+            conn_count = int(cache.get(self.user_status_cache_key, 1)) - 1
+            
+            if conn_count <= 0:
+                active_users.pop(self.user.id, None)
+                cache.set(self.doc_cache_key, active_users, 30)
+                cache.delete(self.user_status_cache_key)
+                await self.channel_layer.group_send(self.group_name, {
+                    "type": "user.leave",
+                    "user_id": self.user.id,
+                    "username": self.user.username,
+                    "sender": self.channel_name,
+                })
+            else:
+                cache.set(self.user_status_cache_key, conn_count)
+                
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
     async def receive(self, text_data=None, bytes_data=None):
@@ -56,7 +61,7 @@ class DocumentConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _check_perms(self):
         return self.user.is_authenticated and Document.objects.filter(
-            editors=self.user, slug=self.slug).exists()
+            editors=self.user, pk=self.doc_pk).exists()
 
     async def is_authorized(self) -> bool:
         return await self._check_perms()
@@ -67,16 +72,20 @@ class DocumentConsumer(AsyncWebsocketConsumer):
                                     "users": active_users}))
         
         if self.user.id not in active_users.keys():
+            conn_count = 1
             await self.channel_layer.group_send(self.group_name, {
                     "type": "user.join",
                     "user_id": self.user.id,
                     "username": self.user.username,
                     "sender": self.channel_name,
                 })
-            
+
             active_users.update({self.user.id: self.user.username})
             cache.set(self.doc_cache_key, active_users, 30)
-            cache.set(self.user_status_cache_key, self.user.id, 30)
+        else:
+            conn_count = int(cache.get(self.user_status_cache_key, 1)) + 1
+            
+        cache.set(self.user_status_cache_key, conn_count, 30)
 
     async def user_join(self, event):
         if event["sender"] == self.channel_name:
