@@ -3,7 +3,9 @@ import json
 from asgiref.sync import sync_to_async
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import Client, TestCase
+from django.conf import settings
 
 from config.asgi import application
 from .models import Document
@@ -32,53 +34,55 @@ class DocumentGroupTests(TestCase):
         return self.client.cookies['sessionid'].value
     
     async def test_anonymous_connection_is_rejected(self):
-        ws = communicator(f'/ws/documents/{self.document.slug}/')
+        ws = communicator(f'/ws/documents/{self.document.pk}/')
         connected, _ = await ws.connect()
         self.assertFalse(connected)
         
     async def test_unauthorized_connection_is_rejected(self):
         session_id = await sync_to_async(self.session_id_for)(self.outsider)
-        ws = communicator(f'/ws/documents/{self.document.slug}/', session_id)
+        ws = communicator(f'/ws/documents/{self.document.pk}/', session_id)
         connected, _ = await ws.connect()
         self.assertFalse(connected)
         
     async def test_authorized_connection_is_accepted(self):
         session_id = await sync_to_async(self.session_id_for)(self.editor_1)
-        ws = communicator(f'/ws/documents/{self.document.slug}/', session_id)
+        ws = communicator(f'/ws/documents/{self.document.pk}/', session_id)
         connected, _ = await ws.connect()
         self.assertTrue(connected)
         
         await ws.disconnect()
         
     async def test_user_connection_messages(self):
-        editor_1_ws = communicator(f'/ws/documents/{self.document.slug}/', 
+        editor_1_ws = communicator(f'/ws/documents/{self.document.pk}/', 
                                     await sync_to_async(self.session_id_for)(self.editor_1))
         self.assertTrue((await editor_1_ws.connect())[0])
         initial_msg = await editor_1_ws.receive_from()
         self.assertEqual(json.loads(initial_msg).get("type"), "active_users")
         
-        editor_2_ws = communicator(f'/ws/documents/{self.document.slug}/', 
+        editor_2_ws = communicator(f'/ws/documents/{self.document.pk}/', 
                                     await sync_to_async(self.session_id_for)(self.editor_2))
         self.assertTrue((await editor_2_ws.connect())[0])
         initial_msg = await editor_2_ws.receive_from()
         self.assertEqual(json.loads(initial_msg).get("type"), "active_users")
         
         user_join_msg = await editor_1_ws.receive_from()
-        self.assertEqual(json.loads(user_join_msg), {"type": "user_join", "username": self.editor_2.username})
+        self.assertEqual(json.loads(user_join_msg), 
+                         {"type": "user_join", "username": self.editor_2.username})
         
         await editor_1_ws.disconnect()
         user_leave_msg = await editor_2_ws.receive_from()
-        self.assertEqual(json.loads(user_leave_msg), {"type": "user_leave", "username": self.editor_1.username})
+        self.assertEqual(json.loads(user_leave_msg), 
+                         {"type": "user_leave", "username": self.editor_1.username})
         
         await editor_2_ws.disconnect()
         
     async def test_document_update_received(self):
-        editor_1_ws = communicator(f'/ws/documents/{self.document.slug}/', 
+        editor_1_ws = communicator(f'/ws/documents/{self.document.pk}/', 
                                     await sync_to_async(self.session_id_for)(self.editor_1))
         await editor_1_ws.connect()
         await editor_1_ws.receive_from() # pop initial message
         
-        editor_2_ws = communicator(f'/ws/documents/{self.document.slug}/', 
+        editor_2_ws = communicator(f'/ws/documents/{self.document.pk}/', 
                                     await sync_to_async(self.session_id_for)(self.editor_2))
         await editor_2_ws.connect()
         await editor_2_ws.receive_from() # pop initial message
@@ -95,12 +99,12 @@ class DocumentGroupTests(TestCase):
         await editor_2_ws.disconnect()
         
     async def test_cursor_update_received(self):
-        editor_1_ws = communicator(f'/ws/documents/{self.document.slug}/', 
+        editor_1_ws = communicator(f'/ws/documents/{self.document.pk}/', 
                                     await sync_to_async(self.session_id_for)(self.editor_1))
         await editor_1_ws.connect()
         await editor_1_ws.receive_from() # pop initial message
         
-        editor_2_ws = communicator(f'/ws/documents/{self.document.slug}/', 
+        editor_2_ws = communicator(f'/ws/documents/{self.document.pk}/', 
                                     await sync_to_async(self.session_id_for)(self.editor_2))
         await editor_2_ws.connect()
         await editor_2_ws.receive_from() # pop initial message
@@ -117,6 +121,35 @@ class DocumentGroupTests(TestCase):
         await editor_1_ws.disconnect()
         await editor_2_ws.disconnect()
 
+    async def test_multiple_connection_for_same_user(self):
+        observer = communicator(f'/ws/documents/{self.document.pk}/', 
+                              await sync_to_async(self.session_id_for)(self.editor_1))
+        self.assertTrue((await observer.connect())[0])
+        await observer.receive_from() # pop initial message
+        
+        conn_1 = communicator(f'/ws/documents/{self.document.pk}/', 
+                              await sync_to_async(self.session_id_for)(self.editor_2))
+        self.assertTrue((await conn_1.connect())[0])
+        
+        user_join_msg = await observer.receive_from()
+        self.assertEqual(json.loads(user_join_msg), 
+                         {"type": "user_join", "username": self.editor_2.username})
+        
+        conn_2 = communicator(f'/ws/documents/{self.document.pk}/', 
+                             await sync_to_async(self.session_id_for)(self.editor_2))
+        self.assertTrue((await conn_2.connect())[0])
+        self.assertTrue(await observer.receive_nothing()) # doesn't receive 'user_join' msg
+        
+        await conn_2.disconnect()
+        self.assertTrue(await observer.receive_nothing()) # doesn't receive 'user_leave' msg
+        
+        await conn_1.disconnect()
+        user_leave_msg = await observer.receive_from()
+        self.assertEqual(json.loads(user_leave_msg), 
+                         {"type": "user_leave", "username": self.editor_2.username})
+        
+        await observer.disconnect()
+
     def test_document_page_requires_login(self):
-        response = self.client.get(f'/documents/{self.document.slug}/')
+        response = self.client.get(f'/documents/{self.document.pk}/')
         self.assertEqual(response.status_code, 302)

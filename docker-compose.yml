@@ -14,8 +14,21 @@ services:
 
   redis:
     image: redis:7.4.1-alpine
+    ports:
+      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
+
+  redis-listener:
+    build: .
+    command: python manage.py listen_redis_expired
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - redis
+    restart: unless-stopped
+    deploy:
+      replicas: 1
